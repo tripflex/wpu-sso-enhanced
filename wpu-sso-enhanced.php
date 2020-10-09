@@ -1,9 +1,9 @@
 <?php
 /*
   Plugin Name: WP Ultimo SSO - Mercator Enhanced
-  Plugin URI: https://github.com/tripflex/wpu-sso-enhanced
-  Description: WP Ultimo 1.x SSO handling for newer versions of Chrome
-  Version: 1.0
+  Plugin URI: https://smyl.es
+  Description: WP Ultimo SSO handling for newer versions of Chrome
+  Version: 1.0.0
   Author: Myles McNamara
   Author URI: https://smyles.dev
 */
@@ -11,9 +11,41 @@
 defined( 'ABSPATH' ) or die( 'No script kiddies please!' );
 
 /**
+ * This file MUST be placed in the wp-content/mu-plugins/ directory to work correctly.
+ *
+ * Functionality is handled in a few different ways.  If $trigger_on_auth_cookie_set is enabled below, when a user's authentication cookie is set (outside of this code),
+ * SSO meta will be generated for that user, stored in the network site user meta including the user's custom domains, site IDs, and SSO expiration (@see $this->build_sso_meta()).
+ *
+ * This is done so that data can not be modified by bad actors in any way.
+ *
+ * When the next page is loaded (which normally always happens right after auth cookie is set due to redirect after login), and the cookie is detected (@see $this->check_cookie_start_sso())
+ * the nonce will be validated and the SSO meta set above will be pulled to start the SSO flow process.
+ *
+ * The user is then redirected to the custom domain to start the SSO, passing the nonce and user id in query params (ie domain.com/?wpu_sso_me=1234&nonce=XXX), which is then detected in
+ * $this->maybe_process_sso(), where the COOKIE_DOMAIN is configured, and then auth cookie is set, redirecting to next site to do SSO on or if no more sites, redirecting to the main page
+ * of the last site SSO processed on.
+ *
+ * Alternatively if you set $trigger_on_auth_cookie_set to false below, you will need to trigger this yourself using the "wpu_sso_me_next_page_load" or "wpu_sso_me_now" actions, passing the
+ * user ID as the only argument.
+ */
+
+/**
  * Class WP_Ultimo_SSO_Enhanced
  */
 class WP_Ultimo_SSO_Enhanced {
+
+	// User defined values (you can customize handling by setting values below)
+
+	/**
+	 * @var bool Whether or not to trigger SSO on setting of user auth cookie.
+	 *           If this is set to false, you MUST trigger the SSO your self using wpu_sso_me_next_page_load or wpu_sso_me_now actions
+	 */
+	private $trigger_on_auth_cookie_set = true;
+	/**
+	 * @var bool Whether or not to use remote IP in generating nonce action (for extra sanity check).
+	 *           If users have issues with logging in due to dynamic IP addresses, set this to false.
+	 */
+	private $use_remote_ip = true;
 	/**
 	 * @var int Number of seconds before SSO expires
 	 */
@@ -26,18 +58,21 @@ class WP_Ultimo_SSO_Enhanced {
 	 * @var string Meta key to store SSO information in user meta
 	 */
 	private $user_meta_key = 'wpu_sso_me';
+
+	// Class object storage (do not modify values below here)
+
 	/**
 	 * @var array Local object storage of SSO meta
 	 */
 	private $sso_meta = array();
 	/**
+	 * @var array Current site meta (from SSO meta) only set when starting SSO processing (@see $this->maybe_process_sso())
+	 */
+	private $current_site_meta = array();
+	/**
 	 * @var integer User ID of user attempting to SSO
 	 */
 	private $user_id;
-	/**
-	 * @var integer Site ID where the SSO meta is stored at
-	 */
-	private $meta_site_id;
 	/**
 	 * @var string Nonce value to validate requests
 	 */
@@ -48,8 +83,61 @@ class WP_Ultimo_SSO_Enhanced {
 	 */
 	public function __construct() {
 		add_action( 'set_logged_in_cookie', array( $this, 'set_logged_in_cookie' ), 10, 6 );
+
 		add_action( 'muplugins_loaded', array( $this, 'maybe_process_sso' ) );
-		add_action( 'plugins_loaded', array( $this, 'plugins_loaded' ) );
+		add_action( 'plugins_loaded', array( $this, 'check_cookie_start_sso' ) );
+
+		/**
+		 * This action is for triggering SSO on the next page load, can be used by themes or plugins
+		 */
+		add_action( 'wpu_sso_me_next_page_load', array( $this, 'trigger_sso_next_page_load' ) );
+		/**
+		 * This action is for triggering SSO immediately
+		 */
+		add_action( 'wpu_sso_me_now', array( $this, 'trigger_sso_now' ) );
+	}
+
+	/**
+	 * Check if Cookie Exists to Start SSO
+	 *
+	 * @since @@version
+	 *
+	 */
+	public function check_cookie_start_sso() {
+
+		if ( ! isset( $_COOKIE[ $this->cookie_name ] ) || empty( $_COOKIE[ $this->cookie_name ] ) ) {
+			return;
+		}
+
+		$raw_data = json_decode( $_COOKIE[ $this->cookie_name ], true );
+		if ( empty( $raw_data ) || ! is_array( $raw_data ) ) {
+			return;
+		}
+
+		if ( ! isset( $raw_data['user_id'], $raw_data['nonce'] ) ) {
+			return;
+		}
+
+		$this->user_id = absint( $raw_data['user_id'] );
+		$this->nonce   = sanitize_text_field( $raw_data['nonce'] );
+
+		if ( empty( $this->user_id ) || empty( $this->nonce ) ) {
+			return;
+		}
+
+		if ( ! $this->verify_shared_nonce() ) {
+			return;
+		}
+
+		if ( ! $this->get_sso_meta() ) {
+			return;
+		}
+
+		/**
+		 * Remove SSO cookie before triggering redirect
+		 */
+		$this->set_sso_cookie( true );
+		$this->redirect_end_or_next();
 	}
 
 	/**
@@ -65,18 +153,17 @@ class WP_Ultimo_SSO_Enhanced {
 	 *
 	 */
 	public function maybe_process_sso() {
-		if( ! isset( $_GET['wpu_sso_me'], $_GET['meta_site_id'], $_GET['user_id'], $_GET['nonce'] ) ){
+		if( ! isset( $_GET['wpu_sso_me'], $_GET['nonce'] ) ){
 			return false;
 		}
 
 		/**
 		 * Sanitize and set values for the SSO
 		 */
-		$this->user_id = absint( $_GET['user_id'] );
-		$this->meta_site_id = absint( $_GET['meta_site_id'] );
+		$this->user_id = absint( $_GET['wpu_sso_me'] );
 		$this->nonce = sanitize_text_field( $_GET['nonce'] );
 
-		if( empty( $this->meta_site_id ) || empty( $this->user_id ) || empty( $this->nonce ) ){
+		if( empty( $this->user_id ) || empty( $this->nonce ) ){
 			return false;
 		}
 
@@ -85,38 +172,34 @@ class WP_Ultimo_SSO_Enhanced {
 		}
 
 		$current_site_id = get_current_blog_id();
-		$cur_site_meta = isset( $this->sso_meta[ $current_site_id ] ) ? $this->sso_meta[ $current_site_id ] : false;
+		$this->current_site_meta = isset( $this->sso_meta[ $current_site_id ] ) ? $this->sso_meta[ $current_site_id ] : false;
 
-		if( ! $cur_site_meta || ! isset( $cur_site_meta['expires'], $cur_site_meta['cookie_domain'] ) ){
+		if( ! $this->current_site_meta || ! isset( $this->current_site_meta['cookie_domain'] ) ){
 			return false;
-		}
-
-		if( time() > absint( $cur_site_meta['expires'] ) ){
-			wp_die( __( 'SSO has expired, please try logging in again.' ) );
 		}
 
 		/**
 		 * Set COOKIE_DOMAIN to the domain we're doing SSO on, this is required for when
 		 * set_user_auth_cookie() is called.
 		 */
-		define( 'COOKIE_DOMAIN', $cur_site_meta['cookie_domain'] );
-
+		define( 'COOKIE_DOMAIN', $this->current_site_meta['cookie_domain'] );
 		/**
-		 * Prevent infinite loop when we call wp_set_auth_cookie() in set_user_auth_cookie()
+		 * Define constant WPU_DOING_SSO so other plugins or code know that on this page load/execution,
+		 * we are doing SSO processing
 		 */
-		remove_action( 'set_logged_in_cookie', array( $this, 'set_logged_in_cookie' ) );
+		define( 'WPU_DOING_SSO', true );
 
 		/**
 		 * Trigger setting the auth cookie after plugins are loaded. This is required because at this point the other required
 		 * functions and constants have not been defined yet.
 		 */
-		add_action( 'plugins_loaded', array( $this, 'set_user_auth_cookie' ) );
+		add_action( 'plugins_loaded', array( $this, 'set_user_auth_cookie' ), -1 );
 	}
 
 	/**
 	 * Set User Authentication Cookie
 	 *
-	 * This method is only triggered after we have successfully validated expiration, and nonce.
+	 * This method is only triggered after we have successfully set the cookie domain, BEFORE validating nonce and expiration.
 	 * At this point, the local class object values have already been set (and only set for this page load).
 	 *
 	 * @since @@version
@@ -124,18 +207,31 @@ class WP_Ultimo_SSO_Enhanced {
 	 */
 	public function set_user_auth_cookie() {
 
-		if( ! empty( $this->user_id ) ){
-			wp_set_auth_cookie( $this->user_id, true );
-
-			/**
-			 * Make sure we remove this from SSO meta
-			 */
-			$current_site_id = get_current_blog_id();
-			unset( $this->sso_meta[ $current_site_id ] );
-			$this->set_sso_meta();
-
-			$this->redirect_end_or_next();
+		if ( ! $this->verify_shared_nonce() ) {
+			wp_die( __( 'SSO failed, unable to validate nonce.' ) );
 		}
+
+		if ( time() > absint( $this->current_site_meta['expires'] ) ) {
+			wp_die( __( 'SSO has expired, please try logout, and try again.' ) );
+		}
+
+		if ( ! user_can( $this->user_id, 'read' ) ) {
+			wp_die( __( 'Single Sign On is trying to log you in, but your user account is not authorized for this site. Please contact a network admin and ask them to add you to this site.' ) );
+		}
+
+		/**
+		 * Remove this site from SSO meta (before setting auth cookie)
+		 */
+		unset( $this->sso_meta[ $this->current_site_meta['site_id'] ] );
+		$this->set_sso_meta();
+
+		/**
+		 * Prevent infinite loop when we call wp_set_auth_cookie() in set_user_auth_cookie()
+		 */
+		remove_action( 'set_logged_in_cookie', array( $this, 'set_logged_in_cookie' ) );
+		wp_set_auth_cookie( $this->user_id, true );
+
+		$this->redirect_end_or_next();
 	}
 
 	/**
@@ -160,76 +256,62 @@ class WP_Ultimo_SSO_Enhanced {
 		$domain = $this->sso_meta[ $next_site_id ]['domain'];
 		$protocol = is_ssl() ? 'https://' : 'http://';
 
-		$site_url = add_query_arg( array( 'wpu_sso_me' => 'true', 'meta_site_id' => $this->meta_site_id, 'user_id' => $this->user_id, 'nonce' => $this->nonce ), "{$protocol}{$domain}" );
-
-		if ( ! function_exists( 'wp_redirect' ) ) {
-			require_once ABSPATH . '/wp-includes/pluggable.php';
-		}
-
+		$site_url = add_query_arg( array( 'wpu_sso_me' => $this->user_id, 'nonce' => $this->nonce ), "{$protocol}{$domain}" );
 		wp_redirect( $site_url );
 		exit;
 	}
 
 	/**
-	 * Check if Cookie Exists to Start SSO
+	 * Get Nonce Action
 	 *
+	 * @return string
 	 * @since @@version
 	 *
 	 */
-	public function plugins_loaded() {
+	private function get_nonce_action(){
+		$default = "{$this->user_id}_wpu_sso_me";
 
-		if ( ! isset( $_COOKIE[ $this->cookie_name ] ) || empty( $_COOKIE[ $this->cookie_name ] ) ) {
-			return;
+		if( ! $this->use_remote_ip ){
+			return $default;
 		}
 
-		$raw_data = json_decode( $_COOKIE[ $this->cookie_name ], true );
-		if( empty( $raw_data ) || ! is_array( $raw_data ) ){
-			return;
-		}
+		/**
+		 * This value can't be spoofed (only if have control over ISP or via BGP which would be almost impossible)
+		 *
+		 * In theory this could also be the IP of a proxy as well, but for our situation we're really only using it to validate
+		 * the request is coming from the same IP address, just as an additional sanity check, and not in the terms of security
+		 * which is handled by the local WordPress salt/hashing.
+		 */
+		$remote_ip = $_SERVER['REMOTE_ADDR'];
+		// IPv4 modify 127.0.0.1 to 127_0_0_1
+		$remote_ip_slug = str_replace( '.', '_', $remote_ip );
+		// IPv6 modify 2001:db8::1 to 2001_db8__1
+		$remote_ip_slug = str_replace( ':', '_', $remote_ip_slug );
 
-		if( ! isset( $raw_data['meta_site_id'], $raw_data['user_id'], $raw_data['nonce'] ) ){
-			return;
-		}
-
-		$this->meta_site_id = sanitize_text_field( $raw_data['meta_site_id'] );
-		$this->user_id = sanitize_text_field( $raw_data['user_id'] );
-		$this->nonce = sanitize_text_field( $raw_data['nonce'] );
-
-		if( empty( $this->meta_site_id ) || empty( $this->user_id ) || empty( $this->nonce ) ){
-			return;
-		}
-
-		//undefined wp_nonce_tick
-		if( ! $this->verify_shared_nonce( $this->nonce, "{$this->user_id}_wpu_sso_me" ) ){
-			return;
-		}
-
-		if( ! $this->get_sso_meta() ){
-			return;
-		}
-
-		$this->redirect_end_or_next();
+		return "{$default}_{$remote_ip_slug}";
 	}
 
 	/**
 	 * Set SSO Cookie
 	 *
+	 * @param bool $remove
+	 *
 	 * @return bool
 	 * @since @@version
-	 *
 	 */
-	public function set_sso_cookie() {
+	public function set_sso_cookie( $remove = false ) {
 
-		$data = array(
-			'meta_site_id' => get_current_blog_id(),
+		$data = $remove ? array() : array(
 			'user_id' => $this->user_id,
-			'nonce' => $this->create_shared_nonce( "{$this->user_id}_wpu_sso_me" )
+			'nonce' => $this->create_shared_nonce()
 		);
 
+		$lifespan = $remove ? time() - 1 : time() + $this->lifespan;
+
 		// HTTPS
-		setcookie( $this->cookie_name, json_encode( $data ), time() + $this->lifespan, COOKIEPATH, COOKIE_DOMAIN, true, true );
+		setcookie( $this->cookie_name, json_encode( $data ), $lifespan, COOKIEPATH, COOKIE_DOMAIN, true, true );
 		// HTTP
-		return setcookie( $this->cookie_name, json_encode( $data ), time() + $this->lifespan, COOKIEPATH, COOKIE_DOMAIN, false, true );
+		return setcookie( $this->cookie_name, json_encode( $data ), $lifespan, COOKIEPATH, COOKIE_DOMAIN, false, true );
 	}
 
 	/**
@@ -239,11 +321,10 @@ class WP_Ultimo_SSO_Enhanced {
 	 * doing here, we need to make a user-independent nonce. The user we're working
 	 * on can instead be part of the action.
 	 *
-	 * @param string $action Scalar value to add context to the nonce.
-	 *
 	 * @return string Nonce token.
 	 */
-	private function create_shared_nonce( $action ) {
+	private function create_shared_nonce() {
+		$action = $this->get_nonce_action();
 		$i = $this->nonce_tick();
 		return substr( wp_hash( $i . '|' . $action, 'nonce' ), - 12, 10 );
 	}
@@ -254,22 +335,19 @@ class WP_Ultimo_SSO_Enhanced {
 	 * Uses nonces not linked to the current user. See {@see create_shared_nonce()}
 	 * for more about why this exists.
 	 *
-	 * @param string     $nonce  Nonce that was used in the form to verify
-	 * @param string|int $action Should give context to what is taking place and be the same when nonce was created.
-	 *
 	 * @return bool Whether the nonce check passed or failed.
 	 */
-	private function verify_shared_nonce( $nonce, $action ) {
+	private function verify_shared_nonce() {
 
-		if ( empty( $nonce ) ) {
+		if ( empty( $this->nonce ) ) {
 			return false;
 		}
 
+		$action = $this->get_nonce_action();
 		$i = $this->nonce_tick();
 
-		// Nonce generated 0-12 hours ago
 		$expected = substr( wp_hash( $i . '|' . $action, 'nonce' ), - 12, 10 );
-		if ( hash_equals( $expected, $nonce ) ) {
+		if ( hash_equals( $expected, $this->nonce ) ) {
 			return 1;
 		}
 
@@ -297,7 +375,10 @@ class WP_Ultimo_SSO_Enhanced {
 	 *
 	 */
 	private function set_sso_meta(){
-		switch_to_blog( $this->meta_site_id );
+		/**
+		 * SSO metadata is stored on network user meta, to prevent modification by bad actors
+		 */
+		switch_to_blog( 1 );
 		update_user_meta( $this->user_id, $this->user_meta_key, $this->sso_meta );
 		restore_current_blog();
 	}
@@ -310,7 +391,10 @@ class WP_Ultimo_SSO_Enhanced {
 	 *
 	 */
 	private function get_sso_meta(){
-		switch_to_blog( $this->meta_site_id );
+		/**
+		 * SSO metadata is stored on network user meta, to prevent modification by bad actors
+		 */
+		switch_to_blog( 1 );
 		$this->sso_meta = get_user_meta( $this->user_id, $this->user_meta_key, true );
 		restore_current_blog();
 		return empty( $this->sso_meta ) ? false : $this->sso_meta;
@@ -333,29 +417,76 @@ class WP_Ultimo_SSO_Enhanced {
 	 *
 	 */
 	public function set_logged_in_cookie( $logged_in_cookie, $expire, $expiration, $user_id, $scheme, $token ) {
+		if( ! $this->trigger_on_auth_cookie_set ){
+			return;
+		}
+
+		$this->trigger_sso_next_page_load( $user_id );
+	}
+
+	/**
+	 * Setup SSO Handling
+	 *
+	 * @param $user_id
+	 *
+	 * @return bool
+	 * @since @@version
+	 *
+	 */
+	private function setup_sso( $user_id ){
 
 		/**
 		 * No need to do anything if unable to get subscription for user
 		 */
 		if ( ! $sub = wu_get_subscription( $user_id ) ) {
-			return;
+			return false;
 		}
 
-		$this->user_id      = $user_id;
-		$this->meta_site_id = get_current_blog_id();
-
-		$site_ids = $sub->get_sites_ids();
+		$this->user_id = $user_id;
+		$site_ids      = $sub->get_sites_ids();
 
 		if ( empty( $site_ids ) ) {
-			return;
+			return false;
 		}
 
 		if ( ! $this->build_sso_meta( $site_ids ) ) {
-			return;
+			return false;
 		}
 
 		$this->set_sso_meta();
-		$this->set_sso_cookie();
+		return true;
+	}
+
+	/**
+	 * Trigger SSO handling immediately
+	 *
+	 * @param $user_id
+	 *
+	 * @since @@version
+	 *
+	 */
+	public function trigger_sso_now( $user_id ) {
+		if ( $this->setup_sso( $user_id ) ) {
+			$this->nonce = $this->create_shared_nonce();
+			$this->redirect_end_or_next();
+		}
+	}
+
+	/**
+	 * Trigger SSO handling on next page load
+	 *
+	 * This method can be called via other plugins or themes by using the wpu_sso_me_next_page_load action,
+	 * passing the user ID as the only parameter.
+	 *
+	 * @param $user_id
+	 *
+	 * @since @@version
+	 *
+	 */
+	public function trigger_sso_next_page_load( $user_id ){
+		if( $this->setup_sso( $user_id ) ){
+			$this->set_sso_cookie();
+		}
 	}
 
 	/**
