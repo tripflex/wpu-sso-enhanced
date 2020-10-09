@@ -304,7 +304,7 @@ class WP_Ultimo_SSO_Enhanced {
 	 * @return bool
 	 * @since 1.0.0
 	 */
-	public function set_sso_cookie( $remove = false ) {
+	private function set_sso_cookie( $remove = false ) {
 
 		$data = $remove ? array() : array(
 			'user_id' => $this->user_id,
