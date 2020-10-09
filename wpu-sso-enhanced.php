@@ -2,7 +2,7 @@
 /*
   Plugin Name: WP Ultimo SSO - Mercator Enhanced
   Plugin URI: https://smyl.es
-  Description: WP Ultimo SSO handling for newer versions of Chrome
+  Description: WP Ultimo Enhanced Mercator SSO handling, to work with newer versions of Chrome or browsers that set SameSite=lax by default now.
   Version: 1.0.0
   Author: Myles McNamara
   Author URI: https://smyles.dev
@@ -254,9 +254,14 @@ class WP_Ultimo_SSO_Enhanced {
 
 		$next_site_id = key( $this->sso_meta );
 		$domain = $this->sso_meta[ $next_site_id ]['domain'];
-		$protocol = is_ssl() ? 'https://' : 'http://';
+		$ultimo_settings = get_network_option(null, 'wp-ultimo_settings' );
 
-		$site_url = add_query_arg( array( 'wpu_sso_me' => $this->user_id, 'nonce' => $this->nonce ), "{$protocol}{$domain}" );
+		$force_mapped_https = isset( $ultimo_settings['force_mapped_https'] ) ? $ultimo_settings['force_mapped_https'] : false;
+		$force_admin_https = isset( $ultimo_settings['force_admin_https'] ) ? $ultimo_settings['force_admin_https'] : false;
+
+		$scheme = is_ssl() || $force_admin_https || $force_mapped_https || get_blog_option( $next_site_id, 'wu_force_https', false ) ? 'https://' : 'http://';
+
+		$site_url = add_query_arg( array( 'wpu_sso_me' => $this->user_id, 'nonce' => $this->nonce ), "{$scheme}{$domain}" );
 		wp_redirect( $site_url );
 		exit;
 	}
