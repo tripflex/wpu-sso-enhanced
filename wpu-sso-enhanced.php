@@ -100,7 +100,7 @@ class WP_Ultimo_SSO_Enhanced {
 	/**
 	 * Check if Cookie Exists to Start SSO
 	 *
-	 * @since @@version
+	 * @since 1.0.0
 	 *
 	 */
 	public function check_cookie_start_sso() {
@@ -149,7 +149,7 @@ class WP_Ultimo_SSO_Enhanced {
 	 * are not defined until AFTER this method is called (after muplugins_loaded)
 	 *
 	 * @return false
-	 * @since @@version
+	 * @since 1.0.0
 	 *
 	 */
 	public function maybe_process_sso() {
@@ -202,7 +202,7 @@ class WP_Ultimo_SSO_Enhanced {
 	 * This method is only triggered after we have successfully set the cookie domain, BEFORE validating nonce and expiration.
 	 * At this point, the local class object values have already been set (and only set for this page load).
 	 *
-	 * @since @@version
+	 * @since 1.0.0
 	 *
 	 */
 	public function set_user_auth_cookie() {
@@ -237,7 +237,7 @@ class WP_Ultimo_SSO_Enhanced {
 	/**
 	 * Redirect to SSO or End (if no more sites to SSO)
 	 *
-	 * @since @@version
+	 * @since 1.0.0
 	 *
 	 */
 	public function redirect_end_or_next() {
@@ -265,7 +265,7 @@ class WP_Ultimo_SSO_Enhanced {
 	 * Get Nonce Action
 	 *
 	 * @return string
-	 * @since @@version
+	 * @since 1.0.0
 	 *
 	 */
 	private function get_nonce_action(){
@@ -297,7 +297,7 @@ class WP_Ultimo_SSO_Enhanced {
 	 * @param bool $remove
 	 *
 	 * @return bool
-	 * @since @@version
+	 * @since 1.0.0
 	 */
 	public function set_sso_cookie( $remove = false ) {
 
@@ -361,7 +361,7 @@ class WP_Ultimo_SSO_Enhanced {
 	 * Same as wp_nonce_tick() except the lifespan is the lifespan configured specifically for SSO
 	 *
 	 * @return false|float
-	 * @since @@version
+	 * @since 1.0.0
 	 *
 	 */
 	private function nonce_tick(){
@@ -371,7 +371,7 @@ class WP_Ultimo_SSO_Enhanced {
 	/**
 	 * Store SSO Meta
 	 *
-	 * @since @@version
+	 * @since 1.0.0
 	 *
 	 */
 	private function set_sso_meta(){
@@ -387,7 +387,7 @@ class WP_Ultimo_SSO_Enhanced {
 	 * Get SSO Meta
 	 *
 	 * @return false|mixed
-	 * @since @@version
+	 * @since 1.0.0
 	 *
 	 */
 	private function get_sso_meta(){
@@ -412,8 +412,7 @@ class WP_Ultimo_SSO_Enhanced {
 	 * @param string $scheme           Authentication scheme. Default 'logged_in'.
 	 * @param string $token            User's session token to use for this cookie.
 	 *
-	 * @since 2.6.0
-	 * @since 4.9.0 The `$token` parameter was added.
+	 * @since 1.0.0
 	 *
 	 */
 	public function set_logged_in_cookie( $logged_in_cookie, $expire, $expiration, $user_id, $scheme, $token ) {
@@ -430,7 +429,7 @@ class WP_Ultimo_SSO_Enhanced {
 	 * @param $user_id
 	 *
 	 * @return bool
-	 * @since @@version
+	 * @since 1.0.0
 	 *
 	 */
 	private function setup_sso( $user_id ){
@@ -462,7 +461,7 @@ class WP_Ultimo_SSO_Enhanced {
 	 *
 	 * @param $user_id
 	 *
-	 * @since @@version
+	 * @since 1.0.0
 	 *
 	 */
 	public function trigger_sso_now( $user_id ) {
@@ -480,7 +479,7 @@ class WP_Ultimo_SSO_Enhanced {
 	 *
 	 * @param $user_id
 	 *
-	 * @since @@version
+	 * @since 1.0.0
 	 *
 	 */
 	public function trigger_sso_next_page_load( $user_id ){
@@ -495,7 +494,7 @@ class WP_Ultimo_SSO_Enhanced {
 	 * @param array $site_ids
 	 *
 	 * @return array
-	 * @since @@version
+	 * @since 1.0.0
 	 *
 	 */
 	private function build_sso_meta( $site_ids = array() ) {
