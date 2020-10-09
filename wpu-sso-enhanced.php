@@ -257,7 +257,7 @@ class WP_Ultimo_SSO_Enhanced {
 		$ultimo_settings = get_network_option(null, 'wp-ultimo_settings' );
 
 		$force_mapped_https = isset( $ultimo_settings['force_mapped_https'] ) ? $ultimo_settings['force_mapped_https'] : false;
-		$force_admin_https = isset( $ultimo_settings['force_admin_https'] ) ? $ultimo_settings['force_admin_https'] : false;
+		$force_admin_https = isset( $ultimo_settings['force_admin_https'] ) ? $ultimo_settings['force_admin_https'] : ( defined( 'FORCE_SSL_ADMIN' ) && FORCE_SSL_ADMIN );
 
 		$scheme = is_ssl() || $force_admin_https || $force_mapped_https || get_blog_option( $next_site_id, 'wu_force_https', false ) ? 'https://' : 'http://';
 
